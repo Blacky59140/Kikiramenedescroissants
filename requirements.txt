@@ -1,0 +1,4 @@
+# Dépendances figées (versions testées). Installation : pip install -r requirements.txt
+tkcalendar==1.6.1
+Pillow==12.3.0
+Babel==2.18.0

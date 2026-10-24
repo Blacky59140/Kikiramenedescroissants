@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+# Données de l'application (noms, dates, positions de fenêtres)
+*.json
+*.json.bak
+*.corrompu
+*.tmp
+# Compilation PyInstaller
+build/
+dist/
+*.spec
