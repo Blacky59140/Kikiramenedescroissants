@@ -31,6 +31,7 @@ from ui_dates_bloquees import ouvrir_fenetre_dates_bloquees
 from ui_saisie import ouvrir_fenetre_saisie
 from ui_popup import afficher_popup_du_jour
 from ui_helpers import appliquer_geometrie_sauvegardee, sauvegarder_geometrie_actuelle
+from systray import SYSTRAY_DISPONIBLE, IconeSystray
 from theme import (
     COULEUR_FOND,
     COULEUR_BORDURE,
@@ -72,10 +73,42 @@ class FenetrePrincipale(tk.Tk):
         # suivant, pour déclencher le popup sans avoir à relancer l'appli.
         self.after(self._delai_jusqua_1h_du_matin(), self._verifier_changement_de_jour)
 
+        # Icône dans la zone de notification : la fermeture masque la fenêtre
+        # et l'application reste active en arrière-plan.
+        self.systray = None
+        if SYSTRAY_DISPONIBLE:
+            try:
+                self.systray = IconeSystray(self, self.afficher_fenetre, self._tester_popup_depuis_systray, self.quitter_application)
+            except Exception:
+                self.systray = None
+
     def _fermer_application(self):
-        """Mémorise la taille/position de la fenêtre avant de fermer l'application."""
+        """Croix de la fenêtre : masque dans la zone de notification si l'icône existe, sinon quitte."""
+        if self.systray is None:
+            self.quitter_application()
+            return
         sauvegarder_geometrie_actuelle(self, "principale")
+        self.withdraw()
+        self.systray.signaler_mise_en_arriere_plan()
+
+    def afficher_fenetre(self):
+        """Réaffiche la fenêtre principale (depuis l'icône de la zone de notification)."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
+    def quitter_application(self):
+        """Mémorise la taille/position de la fenêtre (si visible) et ferme réellement l'application."""
+        if self.state() != "withdrawn":
+            sauvegarder_geometrie_actuelle(self, "principale")
+        if self.systray is not None:
+            self.systray.arreter()
         self.destroy()
+
+    def _tester_popup_depuis_systray(self):
+        # Le popup est rattaché à la fenêtre principale : elle doit être visible pour qu'il s'affiche.
+        self.afficher_fenetre()
+        self.tester_popup()
 
     # ------------------------------------------------------------------
     # Construction de l'interface
@@ -107,6 +140,8 @@ class FenetrePrincipale(tk.Tk):
         menu.add_command(label="🚫 Dates bloquées…", command=self._ouvrir_dates_bloquees)
         menu.add_separator()
         menu.add_command(label="🔔 Tester le popup", command=self.tester_popup)
+        menu.add_separator()
+        menu.add_command(label="⏻ Quitter", command=self.quitter_application)
         menu.tk_popup(event.x_root, event.y_root)
 
     def _ouvrir_dates_bloquees(self):
@@ -213,6 +248,9 @@ class FenetrePrincipale(tk.Tk):
 
             evenements_jour = evenements_du_jour(aujourdhui)
             if evenements_jour:
+                # Si l'application tourne en arrière-plan, le popup (rattaché à
+                # la fenêtre principale) ne s'afficherait pas sans elle.
+                self.afficher_fenetre()
                 afficher_popup_du_jour(self, evenements_jour)
 
         # Replanifie pour la prochaine occurrence de 1h00 du matin (recalculé

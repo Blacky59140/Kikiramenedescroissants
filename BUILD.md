@@ -22,7 +22,7 @@ volontairement, modifie les numéros de version puis retest l'application.
 Double-clique sur `build_exe.bat`, ou lance manuellement :
 
 ```
-pyinstaller --noconfirm --onefile --windowed --name "Kikiramenedescroissants" --hidden-import babel.numbers main.py
+pyinstaller --noconfirm --onefile --windowed --name "Kikiramenedescroissants" --hidden-import babel.numbers --hidden-import pystray._win32 main.py
 ```
 
 **Détail des options :**
@@ -36,6 +36,10 @@ pyinstaller --noconfirm --onefile --windowed --name "Kikiramenedescroissants" --
 - `--hidden-import babel.numbers` : **nécessaire**, sinon tkcalendar peut
   planter au lancement (Babel est utilisé en interne pour la traduction du
   calendrier, mais PyInstaller ne le détecte pas toujours automatiquement).
+- `--hidden-import pystray._win32` : **nécessaire** pour l'icône de la zone de
+  notification (pystray choisit son module Windows au lancement, ce que
+  PyInstaller ne voit pas). Sans lui, l'icône n'apparaît pas et la croix
+  ferme l'application.
 
 ## Étape 3 — Récupérer l'exécutable
 

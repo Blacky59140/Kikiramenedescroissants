@@ -16,6 +16,9 @@ GIF animés) :
 pip install -r requirements.txt
 ```
 
+- **pystray** : icône dans la zone de notification de Windows, pour que
+  l'application reste active en arrière-plan. Sans pystray, fermer la
+  fenêtre quitte l'application.
 - **tkcalendar** : **obligatoire**, utilisé pour le calendrier mensuel de
   la fenêtre principale (avec traduction française automatique via Babel,
   installé comme dépendance de tkcalendar).
@@ -50,6 +53,13 @@ python main.py
   - Un événement passé depuis **plus de 3 jours** disparaît de la liste.
   - L'événement du **jour même** s'affiche **en gras** dans sa carte.
   - Un événement passé depuis **moins de 3 jours** s'affiche **en gris moyen**.
+- **Zone de notification (systray)** : une icône croissant apparaît à côté
+  de l'horloge Windows. Fermer la fenêtre (croix) la **masque** sans quitter :
+  l'application continue de tourner en arrière-plan et le contrôle de 1h00
+  déclenche toujours le popup (la fenêtre principale réapparaît alors avec
+  lui). Clic gauche sur l'icône : réafficher la fenêtre ; clic droit :
+  **Ouvrir**, **Tester le popup**, **Quitter**. Pour fermer vraiment
+  l'application : **Quitter** dans ce menu ou dans le menu "⋮".
 - **Popup automatique** : à chaque lancement de l'application, si un ou
   plusieurs événements tombent le jour même, une fenêtre s'ouvre
   automatiquement. **L'application reste aussi à l'écoute pendant qu'elle
@@ -190,6 +200,7 @@ du 01/11/2026 au 02/11/2026
 | `data_manager.py`    | Stockage JSON + logique des dates récurrentes            |
 | `ui_principale.py`   | Fenêtre principale (liste des événements)                |
 | `theme.py`           | Constantes de couleurs partagées (thème visuel)          |
+| `systray.py`         | Icône de la zone de notification (arrière-plan)          |
 | `ui_helpers.py`      | Composants d'interface réutilisés (bouton pleine largeur)|
 | `ui_saisie.py`       | Formulaire de saisie d'un nouvel événement                |
 | `ui_dates_bloquees.py` | Fenêtre de gestion des dates bloquées                  |
@@ -209,4 +220,3 @@ destination). Le script `build_exe.bat` automatise la commande.
 - Lancement automatique au démarrage de Windows (raccourci dans le
   dossier "Démarrage" de Windows, ou tâche planifiée)
 - Export de la liste en PDF ou Excel
-- Icône dans la barre des tâches (systray) pour rester actif en arrière-plan

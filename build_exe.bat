@@ -16,6 +16,7 @@ echo.
 pyinstaller --noconfirm --onefile --windowed ^
     --name "Kikiramenedescroissants" ^
     --hidden-import babel.numbers ^
+    --hidden-import pystray._win32 ^
     main.py
 
 echo.
