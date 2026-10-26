@@ -1,14 +1,17 @@
 """
 ui_popup.py
-Fenêtre popup présentant un événement du jour : photo/GIF en bandeau avec
-badge de catégorie superposé, carte d'info (nom + date), carte message
-(bordure colorée + guillemet), navigation Précédent/Suivant si plusieurs
-événements le même jour, et bouton Fermer. Style inspiré d'une maquette
-réalisée sur Google Stitch.
+Fenêtre popup présentant un événement du jour : photo/GIF affichée en entier
+(format 3:4 vertical prévu), carte d'info (nom + catégorie + date), carte
+message (bordure colorée + guillemet), navigation Précédent/Suivant si
+plusieurs événements le même jour, et bouton Fermer. Quand la fenêtre est
+trop petite, le texte est réduit en priorité, l'image ensuite. Le popup se
+ferme tout seul le lendemain s'il est resté ouvert. Style inspiré d'une
+maquette réalisée sur Google Stitch.
 """
 
 import tkinter as tk
 from tkinter import ttk
+from datetime import date
 
 from data_manager import (
     message_par_defaut,
@@ -45,11 +48,19 @@ LARGEUR_POPUP_DEFAUT = 420
 HAUTEUR_POPUP_DEFAUT = 760
 TAILLE_MIN_POPUP = (340, 560)
 
-PROPORTION_HAUTEUR_PHOTO = 0.40  # part de la fenêtre occupée par la photo
+PROPORTION_HAUTEUR_PHOTO = 0.40  # part de la fenêtre occupée par l'emoji quand il n'y a pas d'image
 HAUTEUR_MIN_PHOTO = 160
+
+# Réduction du texte avant celle de l'image : le facteur appliqué aux polices
+# et aux marges descend par pas jusqu'à ce minimum ; ensuite seulement
+# l'image rapetisse (toujours entière, bandes de couleur sur les côtés).
+FACTEUR_TEXTE_MIN = 0.6
+PAS_FACTEUR_TEXTE = 0.05
+MARGE_CARTES = 15
 
 DELAI_DEBOUNCE_REDIMENSIONNEMENT_MS = 120
 DELAI_MIN_FRAME_MS = 20
+DELAI_VERIFICATION_LENDEMAIN_MS = 60_000  # contrôle chaque minute (robuste à la mise en veille)
 
 CITATION_ICONE = "„"  # guillemet typographique ouvrant, façon maquette
 
@@ -67,39 +78,16 @@ def _eclaircir_couleur(couleur_hex, quantite=0.85):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _redimensionner_cover(image_pil, largeur_cible, hauteur_cible):
-    """Redimensionne puis recadre une image pour qu'elle remplisse exactement
-    (largeur_cible x hauteur_cible) sans déformation, façon CSS `object-fit: cover`."""
-    largeur_cible = max(1, largeur_cible)
-    hauteur_cible = max(1, hauteur_cible)
-    ratio_cible = largeur_cible / hauteur_cible
-    ratio_image = image_pil.width / image_pil.height
-
-    if ratio_image > ratio_cible:
-        nouvelle_hauteur = hauteur_cible
-        nouvelle_largeur = max(1, int(hauteur_cible * ratio_image))
-    else:
-        nouvelle_largeur = largeur_cible
-        nouvelle_hauteur = max(1, int(largeur_cible / ratio_image))
-
-    image_redim = image_pil.resize((nouvelle_largeur, nouvelle_hauteur), FILTRE_REDIMENSIONNEMENT)
-    gauche = (nouvelle_largeur - largeur_cible) // 2
-    haut = (nouvelle_hauteur - hauteur_cible) // 2
-    return image_redim.crop((gauche, haut, gauche + largeur_cible, haut + hauteur_cible))
+def _redimensionner_contain(image_pil, largeur_cible, hauteur_cible):
+    """Redimensionne une image pour qu'elle tienne entièrement dans
+    (largeur_cible x hauteur_cible) sans déformation ni recadrage, façon CSS
+    `object-fit: contain` (le Label centre l'image, le fond comble le reste)."""
+    echelle = min(max(1, largeur_cible) / image_pil.width, max(1, hauteur_cible) / image_pil.height)
+    taille = (max(1, int(image_pil.width * echelle)), max(1, int(image_pil.height * echelle)))
+    return image_pil.resize(taille, FILTRE_REDIMENSIONNEMENT)
 
 
-def _calculer_taille_photo(popup):
-    largeur = popup.winfo_width() or LARGEUR_POPUP_DEFAUT
-    hauteur = popup.winfo_height() or HAUTEUR_POPUP_DEFAUT
-    hauteur_photo = max(HAUTEUR_MIN_PHOTO, int(hauteur * PROPORTION_HAUTEUR_PHOTO))
-    return largeur, hauteur_photo
-
-
-def _calculer_taille_police(popup, base_reference):
-    largeur = popup.winfo_width() or LARGEUR_POPUP_DEFAUT
-    hauteur = popup.winfo_height() or HAUTEUR_POPUP_DEFAUT
-    facteur = min(largeur / LARGEUR_POPUP_DEFAUT, hauteur / HAUTEUR_POPUP_DEFAUT)
-    facteur = max(0.75, min(facteur, 1.8))
+def _taille_police(base_reference, facteur):
     return max(8, int(base_reference * facteur))
 
 
@@ -124,13 +112,18 @@ def afficher_popup_du_jour(parent, evenements):
         "token": 0,
         "apres_id_anim": None,
         "apres_id_redim": None,
+        "apres_id_lendemain": None,
         "pil_image_statique": None,
         "gif_frames": None,
         "gif_index": 0,
+        "ratio_image": None,  # hauteur / largeur du média affiché (None : emoji)
         "taille_cible": (LARGEUR_POPUP_DEFAUT, int(HAUTEUR_POPUP_DEFAUT * PROPORTION_HAUTEUR_PHOTO)),
+        "taille_disposee": None,
     }
 
-    widgets = {"photo": None, "badge": None, "nom": None, "categorie": None, "jour": None, "mois": None, "message": None}
+    # Widgets texte du popup et taille de police de référence (avant réduction)
+    widgets = {}
+    polices = []  # (widget, taille de référence, style)
     label_compteur = None
 
     # ------------------------------------------------------------------
@@ -140,20 +133,22 @@ def afficher_popup_du_jour(parent, evenements):
     zone_photo.pack(fill="x", side="top")
     zone_photo.pack_propagate(False)
 
-    zone_scroll = tk.Frame(popup, bg=COULEUR_FOND)
-    zone_scroll.pack(fill="both", expand=True, side="top")
-
     zone_basse = tk.Frame(popup, bg=COULEUR_FOND)
     zone_basse.pack(fill="x", side="bottom")
+
+    zone_scroll = tk.Frame(popup, bg=COULEUR_FOND)
+    zone_scroll.pack(fill="both", expand=True, side="top")
 
     # --- Bouton Fermer (toujours visible en bas) ---
     def fermer_popup():
         arreter_media()
-        if etat["apres_id_redim"] is not None:
-            try:
-                popup.after_cancel(etat["apres_id_redim"])
-            except (tk.TclError, ValueError):
-                pass
+        for cle in ("apres_id_redim", "apres_id_lendemain"):
+            if etat[cle] is not None:
+                try:
+                    popup.after_cancel(etat[cle])
+                except (tk.TclError, ValueError):
+                    pass
+                etat[cle] = None
         sauvegarder_geometrie_actuelle(popup, "popup")
         popup.destroy()
 
@@ -167,6 +162,18 @@ def afficher_popup_du_jour(parent, evenements):
         frame_navigation.pack(fill="x", pady=(0, 8))
 
     bouton_pleine_largeur(conteneur_bas, "✕  FERMER", fermer_popup, COULEUR_BOUTON_PRINCIPAL_BG, COULEUR_BOUTON_PRINCIPAL_FG)
+
+    # --- Fermeture automatique le lendemain, si personne ne l'a fermé avant ---
+    date_ouverture = date.today()
+
+    def verifier_lendemain():
+        etat["apres_id_lendemain"] = None
+        if date.today() != date_ouverture:
+            fermer_popup()
+            return
+        etat["apres_id_lendemain"] = popup.after(DELAI_VERIFICATION_LENDEMAIN_MS, verifier_lendemain)
+
+    etat["apres_id_lendemain"] = popup.after(DELAI_VERIFICATION_LENDEMAIN_MS, verifier_lendemain)
 
     # ------------------------------------------------------------------
     # Nettoyage / arrêt des animations en cours
@@ -182,9 +189,10 @@ def afficher_popup_du_jour(parent, evenements):
         etat["pil_image_statique"] = None
         etat["gif_frames"] = None
         etat["gif_index"] = 0
+        etat["ratio_image"] = None
 
     # ------------------------------------------------------------------
-    # Rendu image statique / GIF (recadrage "cover" plein cadre)
+    # Rendu image statique / GIF (image entière, sans recadrage)
     # ------------------------------------------------------------------
     def _afficher_photo(image_tk):
         popup.images_references.append(image_tk)
@@ -194,23 +202,23 @@ def afficher_popup_du_jour(parent, evenements):
         widgets["photo"].image = image_tk
 
     def rendre_image_statique():
-        if etat["pil_image_statique"] is None or widgets["photo"] is None:
+        if etat["pil_image_statique"] is None or widgets.get("photo") is None:
             return
         try:
             largeur, hauteur = etat["taille_cible"]
-            image_recadree = _redimensionner_cover(etat["pil_image_statique"], largeur, hauteur)
-            _afficher_photo(ImageTk.PhotoImage(image_recadree))
+            image_reduite = _redimensionner_contain(etat["pil_image_statique"], largeur, hauteur)
+            _afficher_photo(ImageTk.PhotoImage(image_reduite))
         except Exception as erreur:
             print(f"[popup] Erreur de redimensionnement de l'image : {erreur}")
 
     def jouer_frame_gif(token_appel):
-        if token_appel != etat["token"] or not etat["gif_frames"] or widgets["photo"] is None:
+        if token_appel != etat["token"] or not etat["gif_frames"] or widgets.get("photo") is None:
             return
         frame_pil, duree_ms = etat["gif_frames"][etat["gif_index"]]
         try:
             largeur, hauteur = etat["taille_cible"]
-            image_recadree = _redimensionner_cover(frame_pil, largeur, hauteur)
-            _afficher_photo(ImageTk.PhotoImage(image_recadree))
+            image_reduite = _redimensionner_contain(frame_pil, largeur, hauteur)
+            _afficher_photo(ImageTk.PhotoImage(image_reduite))
         except Exception as erreur:
             print(f"[popup] Erreur d'affichage du GIF : {erreur}")
             return
@@ -248,9 +256,40 @@ def afficher_popup_du_jour(parent, evenements):
             print(f"[popup] Impossible de lire le GIF '{chemin}' : {erreur}")
             return None
 
+    def charger_media(chemin_media):
+        """Charge l'image ou le GIF (sans l'afficher) et retient son ratio. Renvoie True si réussi."""
+        if not chemin_media:
+            return False
+        if not PIL_DISPONIBLE:
+            print(
+                "[popup] Pillow n'est pas installé : impossible d'afficher les images/GIF.\n"
+                "[popup] Installe-le avec : pip install pillow"
+            )
+            return False
+        if _extension(chemin_media) == "gif":
+            frames = charger_gif(chemin_media)
+            if frames:
+                etat["gif_frames"] = frames
+                etat["gif_index"] = 0
+                premiere = frames[0][0]
+                etat["ratio_image"] = premiere.height / premiere.width
+                return True
+        try:
+            etat["pil_image_statique"] = _reduire(_ouvrir_image(chemin_media).convert("RGBA"))
+            etat["ratio_image"] = etat["pil_image_statique"].height / etat["pil_image_statique"].width
+            return True
+        except Exception as erreur:
+            print(f"[popup] Impossible de charger l'image '{chemin_media}' : {erreur}")
+            return False
+
     # ------------------------------------------------------------------
     # Affichage d'un événement à l'index donné
     # ------------------------------------------------------------------
+    def _label_texte(parent_widget, texte, taille, style, **options):
+        label = tk.Label(parent_widget, text=texte, font=("Segoe UI", taille, style), bg="white", **options)
+        polices.append((label, taille, style))
+        return label
+
     def afficher_evenement(i):
         arreter_media()
         etat["index"] = i
@@ -265,65 +304,27 @@ def afficher_popup_du_jour(parent, evenements):
             widget.destroy()
         for widget in zone_scroll.winfo_children():
             widget.destroy()
+        widgets.clear()
+        polices.clear()
 
-        etat["taille_cible"] = _calculer_taille_photo(popup)
-
-        # --- Photo / GIF (image fixe ou animée) ---
+        # --- Photo / GIF (image fixe ou animée), sans badge superposé ---
         widgets["photo"] = tk.Label(zone_photo, bg=_eclaircir_couleur(couleur, 0.85), bd=0)
         widgets["photo"].place(x=0, y=0, relwidth=1, relheight=1)
 
-        chemin_media = chemin_media_pour_popup(evenement)
-        extension = _extension(chemin_media) if chemin_media else ""
-        media_affiche = False
-
-        if chemin_media and PIL_DISPONIBLE:
-            if extension == "gif":
-                frames = charger_gif(chemin_media)
-                if frames:
-                    etat["gif_frames"] = frames
-                    etat["gif_index"] = 0
-                    jouer_frame_gif(token_actuel)
-                    media_affiche = True
-                else:
-                    try:
-                        etat["pil_image_statique"] = _reduire(_ouvrir_image(chemin_media).convert("RGBA"))
-                        rendre_image_statique()
-                        media_affiche = True
-                    except Exception as erreur:
-                        print(f"[popup] Impossible de charger l'image '{chemin_media}' : {erreur}")
-            else:
-                try:
-                    etat["pil_image_statique"] = _reduire(_ouvrir_image(chemin_media).convert("RGBA"))
-                    rendre_image_statique()
-                    media_affiche = True
-                except Exception as erreur:
-                    print(f"[popup] Impossible de charger l'image '{chemin_media}' : {erreur}")
-        elif chemin_media and not PIL_DISPONIBLE:
-            print(
-                "[popup] Pillow n'est pas installé : impossible d'afficher les images/GIF.\n"
-                "[popup] Installe-le avec : pip install pillow"
-            )
-
+        media_affiche = charger_media(chemin_media_pour_popup(evenement))
         if not media_affiche:
             widgets["photo"].configure(text=emoji_categorie(evenement["categorie"]), font=("Segoe UI Emoji", 56))
 
-        # --- Badge de catégorie superposé (coin supérieur gauche de la photo) ---
-        widgets["badge"] = tk.Label(
-            zone_photo, text=f"  {emoji_categorie(evenement['categorie'])}  {evenement['categorie'].upper()}  ",
-            font=("Segoe UI", 9, "bold"), bg="white", fg=couleur,
-        )
-        widgets["badge"].place(x=15, y=15)
-
         # --- Carte info : nom + date ---
-        carte_info = tk.Frame(zone_scroll, bg="white")
-        carte_info.pack(fill="x", padx=15, pady=(15, 0))
+        widgets["carte_info"] = carte_info = tk.Frame(zone_scroll, bg="white")
+        carte_info.pack(fill="x", padx=MARGE_CARTES, pady=(MARGE_CARTES, 0))
 
-        conteneur_info = tk.Frame(carte_info, bg="white", padx=15, pady=15)
+        widgets["conteneur_info"] = conteneur_info = tk.Frame(carte_info, bg="white", padx=15, pady=MARGE_CARTES)
         conteneur_info.pack(fill="x")
 
-        widgets["nom"] = tk.Label(
-            conteneur_info, text=evenement["nom"], font=("Segoe UI", _calculer_taille_police(popup, 26), "bold"),
-            bg="white", fg=COULEUR_TEXTE_PRINCIPAL, anchor="center", justify="center", wraplength=320,
+        widgets["nom"] = _label_texte(
+            conteneur_info, evenement["nom"], 26, "bold",
+            fg=COULEUR_TEXTE_PRINCIPAL, anchor="center", justify="center", wraplength=320,
         )
         widgets["nom"].pack(fill="x")
 
@@ -332,93 +333,123 @@ def afficher_popup_du_jour(parent, evenements):
 
         frame_date = tk.Frame(ligne_sous, bg="white")
         frame_date.pack(side="right")
-        widgets["jour"] = tk.Label(
-            frame_date, text=str(evenement["jour"]),
-            font=("Segoe UI", _calculer_taille_police(popup, 18), "bold"), bg="white", fg=COULEUR_TEXTE_PRINCIPAL,
-        )
-        widgets["jour"].pack()
+        _label_texte(frame_date, str(evenement["jour"]), 18, "bold", fg=COULEUR_TEXTE_PRINCIPAL).pack()
         noms_mois = [
             "JANVIER", "FÉVRIER", "MARS", "AVRIL", "MAI", "JUIN",
             "JUILLET", "AOÛT", "SEPTEMBRE", "OCTOBRE", "NOVEMBRE", "DÉCEMBRE",
         ]
-        widgets["mois"] = tk.Label(
-            frame_date, text=noms_mois[evenement["mois"] - 1], font=("Segoe UI", _calculer_taille_police(popup, 9), "bold"),
-            bg="white", fg=COULEUR_TEXTE_SECONDAIRE,
-        )
-        widgets["mois"].pack()
+        _label_texte(frame_date, noms_mois[evenement["mois"] - 1], 9, "bold", fg=COULEUR_TEXTE_SECONDAIRE).pack()
 
-        widgets["categorie"] = tk.Label(
-            ligne_sous, text=evenement["categorie"].upper(), font=("Segoe UI", _calculer_taille_police(popup, 10), "bold"),
-            bg="white", fg=COULEUR_TEXTE_SECONDAIRE, anchor="w", justify="left", wraplength=200,
+        widgets["categorie"] = _label_texte(
+            ligne_sous, evenement["categorie"].upper(), 10, "bold",
+            fg=COULEUR_TEXTE_SECONDAIRE, anchor="w", justify="left", wraplength=200,
         )
         widgets["categorie"].pack(side="left", fill="x", expand=True)
 
         tk.Frame(carte_info, bg=COULEUR_BORDURE, height=1).pack(fill="x", padx=15)
 
         # --- Carte message (bordure colorée) ---
-        carte_message = tk.Frame(zone_scroll, bg="white", highlightbackground=COULEUR_BORDURE, highlightthickness=1)
-        carte_message.pack(fill="x", padx=15, pady=15)
+        widgets["carte_message"] = carte_message = tk.Frame(
+            zone_scroll, bg="white", highlightbackground=COULEUR_BORDURE, highlightthickness=1,
+        )
+        carte_message.pack(fill="x", padx=MARGE_CARTES, pady=MARGE_CARTES)
 
         barre_couleur = tk.Frame(carte_message, bg=couleur, width=4)
         barre_couleur.pack(side="left", fill="y")
 
-        conteneur_message = tk.Frame(carte_message, bg="white", padx=15, pady=15)
+        widgets["conteneur_message"] = conteneur_message = tk.Frame(carte_message, bg="white", padx=15, pady=MARGE_CARTES)
         conteneur_message.pack(side="left", fill="both", expand=True)
 
         ligne_titre_message = tk.Frame(conteneur_message, bg="white")
         ligne_titre_message.pack(fill="x")
-        tk.Label(
-            ligne_titre_message, text=CITATION_ICONE, font=("Segoe UI", 20, "bold"), bg="white", fg=couleur,
-        ).pack(side="left", padx=(0, 6))
-        tk.Label(
-            ligne_titre_message, text="MESSAGE", font=("Segoe UI", 9, "bold"), bg="white", fg=COULEUR_TEXTE_SECONDAIRE,
-        ).pack(side="left")
+        _label_texte(ligne_titre_message, CITATION_ICONE, 20, "bold", fg=couleur).pack(side="left", padx=(0, 6))
+        _label_texte(ligne_titre_message, "MESSAGE", 9, "bold", fg=COULEUR_TEXTE_SECONDAIRE).pack(side="left")
 
-        widgets["message"] = tk.Label(
-            conteneur_message, text=f"« {message} »", font=("Segoe UI", _calculer_taille_police(popup, 11), "italic"),
-            bg="white", fg=COULEUR_TEXTE_PRINCIPAL, justify="left", anchor="w", wraplength=280,
+        widgets["message"] = _label_texte(
+            conteneur_message, f"« {message} »", 11, "italic",
+            fg=COULEUR_TEXTE_PRINCIPAL, justify="left", anchor="w", wraplength=280,
         )
         widgets["message"].pack(fill="x", pady=(10, 0))
 
         if label_compteur is not None:
             label_compteur.configure(text=f"{i + 1} / {len(evenements)}")
 
-        _mettre_a_jour_largeurs_texte()
+        disposer()
+        if etat["gif_frames"]:
+            jouer_frame_gif(token_actuel)
+        else:
+            rendre_image_statique()
 
     # ------------------------------------------------------------------
     # Adaptation continue à la taille de la fenêtre
     # ------------------------------------------------------------------
-    def _mettre_a_jour_largeurs_texte():
-        largeur_disponible = max(popup.winfo_width() - 90, 180)
-        if widgets["message"] is not None:
-            widgets["message"].configure(wraplength=largeur_disponible)
-        if widgets["nom"] is not None:
-            widgets["nom"].configure(wraplength=max(popup.winfo_width() - 60, 200))
-        if widgets["categorie"] is not None:
-            widgets["categorie"].configure(wraplength=max(popup.winfo_width() - 160, 120))
+    def _taille_popup():
+        largeur, hauteur = popup.winfo_width(), popup.winfo_height()
+        if largeur <= 1 or hauteur <= 1:  # fenêtre pas encore affichée
+            return LARGEUR_POPUP_DEFAUT, HAUTEUR_POPUP_DEFAUT
+        return largeur, hauteur
+
+    def _mettre_a_jour_largeurs_texte(largeur):
+        if widgets.get("message") is not None:
+            widgets["message"].configure(wraplength=max(largeur - 90, 180))
+        if widgets.get("nom") is not None:
+            widgets["nom"].configure(wraplength=max(largeur - 60, 200))
+        if widgets.get("categorie") is not None:
+            widgets["categorie"].configure(wraplength=max(largeur - 160, 120))
+
+    def _appliquer_facteur_texte(facteur):
+        for label, taille, style in polices:
+            label.configure(font=("Segoe UI", _taille_police(taille, facteur), style))
+        marge = max(4, int(MARGE_CARTES * facteur))
+        if "carte_info" in widgets:
+            widgets["conteneur_info"].configure(pady=marge)
+            widgets["conteneur_message"].configure(pady=marge)
+            widgets["carte_info"].pack_configure(pady=(marge, 0))
+            widgets["carte_message"].pack_configure(pady=marge)
+
+    def disposer():
+        """
+        Répartit la hauteur entre l'image et le texte : l'image vise sa taille
+        idéale (pleine largeur, proportions respectées) ; si la place manque,
+        le texte est réduit d'abord (jusqu'à FACTEUR_TEXTE_MIN), puis l'image
+        rapetisse en restant entière.
+        """
+        largeur, hauteur = _taille_popup()
+        _mettre_a_jour_largeurs_texte(largeur)
+        popup.update_idletasks()
+        disponible = hauteur - zone_basse.winfo_reqheight()
+
+        if etat["ratio_image"]:
+            hauteur_photo_ideale = int(largeur * etat["ratio_image"])
+        else:
+            hauteur_photo_ideale = max(HAUTEUR_MIN_PHOTO, int(hauteur * PROPORTION_HAUTEUR_PHOTO))
+
+        facteur = max(FACTEUR_TEXTE_MIN, min(largeur / LARGEUR_POPUP_DEFAUT, hauteur / HAUTEUR_POPUP_DEFAUT, 1.8))
+        while True:
+            _appliquer_facteur_texte(facteur)
+            zone_scroll.update_idletasks()
+            hauteur_texte = zone_scroll.winfo_reqheight()
+            if hauteur_photo_ideale + hauteur_texte <= disponible or facteur <= FACTEUR_TEXTE_MIN:
+                break
+            facteur = max(FACTEUR_TEXTE_MIN, facteur - PAS_FACTEUR_TEXTE)
+
+        hauteur_photo = max(HAUTEUR_MIN_PHOTO, min(hauteur_photo_ideale, disponible - hauteur_texte))
+        etat["taille_cible"] = (largeur, hauteur_photo)
+        etat["facteur_texte"] = facteur
+        zone_photo.configure(height=hauteur_photo)
 
     def _redimensionner_reellement():
-        largeur, hauteur = _calculer_taille_photo(popup)
-        etat["taille_cible"] = (largeur, hauteur)
-        zone_photo.configure(height=hauteur)
-
-        if widgets["nom"] is not None:
-            widgets["nom"].configure(font=("Segoe UI", _calculer_taille_police(popup, 26), "bold"))
-        if widgets["categorie"] is not None:
-            widgets["categorie"].configure(font=("Segoe UI", _calculer_taille_police(popup, 10), "bold"))
-        if widgets["jour"] is not None:
-            widgets["jour"].configure(font=("Segoe UI", _calculer_taille_police(popup, 18), "bold"))
-        if widgets["mois"] is not None:
-            widgets["mois"].configure(font=("Segoe UI", _calculer_taille_police(popup, 9), "bold"))
-        if widgets["message"] is not None:
-            widgets["message"].configure(font=("Segoe UI", _calculer_taille_police(popup, 11), "italic"))
-
-        _mettre_a_jour_largeurs_texte()
-
+        etat["apres_id_redim"] = None
+        disposer()
         if etat["pil_image_statique"] is not None:
             rendre_image_statique()
 
     def _sur_redimensionnement(event=None):
+        # La liaison sur la Toplevel reçoit aussi les <Configure> des widgets
+        # enfants : on ne réagit qu'à un vrai changement de taille de la fenêtre.
+        if event is not None and (event.widget is not popup or (event.width, event.height) == etat["taille_disposee"]):
+            return
+        etat["taille_disposee"] = (event.width, event.height) if event is not None else None
         if etat["apres_id_redim"] is not None:
             try:
                 popup.after_cancel(etat["apres_id_redim"])

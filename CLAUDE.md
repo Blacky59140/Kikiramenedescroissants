@@ -14,7 +14,7 @@ méta-commentaire.
 | `data_manager.py` | Toute la logique et le stockage JSON (événements, fenêtres, dates bloquées, jours fériés, médias) |
 | `ui_principale.py` | Fenêtre principale : calendrier `tkcalendar`, 9 prochains événements, menu ⋮, contrôle quotidien à 1h00 |
 | `ui_saisie.py` | Formulaire d'ajout / modification (date jour+mois+année, alertes week-end / férié / date bloquée) |
-| `ui_popup.py` | Popup des événements du jour (image/GIF en « cover », pas de vidéo) |
+| `ui_popup.py` | Popup des événements du jour (image/GIF affichée en entier, le texte rétrécit en priorité ; fermeture automatique le lendemain ; pas de vidéo) |
 | `ui_dates_bloquees.py` | Gestion des dates bloquées (menu ⋮) |
 | `systray.py` | Icône de la zone de notification (pystray, thread séparé, actions transmises à Tk par une file lue avec `after()`) |
 | `ui_helpers.py`, `theme.py` | Boutons, géométrie des fenêtres, couleurs partagées |

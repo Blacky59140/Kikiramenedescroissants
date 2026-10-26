@@ -69,15 +69,15 @@ python main.py
   Un anniversaire du 29 février apparaît le 28 février les années non
   bissextiles (dans le popup comme dans le calendrier).
   Avec :
-  - une **photo/GIF en bandeau** (recadrée pour remplir tout l'espace,
-    sans déformation) avec un **badge de catégorie** superposé en haut à
-    gauche ;
+  - la **photo/GIF affichée en entier** (format 3:4 vertical conseillé,
+    jamais recadrée ni déformée) ;
   - une carte avec le **nom** et la **date** (jour + mois) ;
   - une carte **message** avec bordure colorée selon la catégorie et une
     icône de citation ;
   - un bouton **"✕ FERMER"** pleine largeur en bas.
-  - **Le texte et la photo s'adaptent en continu** à la taille de la fenêtre
-    (redimensionne la fenêtre pour voir l'effet).
+  - **Le texte et la photo s'adaptent en continu** à la taille de la fenêtre :
+    quand la place manque, le texte rétrécit d'abord, la photo ensuite.
+  - Le popup **se ferme tout seul le lendemain** s'il est resté ouvert.
   - Le média peut être une **image fixe** ou un **GIF animé** (lu en boucle).
   - S'il y a plusieurs événements le même jour, des boutons
     "◀ Précédent" / "Suivant ▶" apparaissent au-dessus du bouton Fermer.
